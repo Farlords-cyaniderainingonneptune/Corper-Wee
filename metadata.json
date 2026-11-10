@@ -1,0 +1,6 @@
+{
+  "name": "Corper Wee",
+  "description": "3D Life Simulation & Social RPG set in NYSC Orientation Camp, Iseyin, Oyo State, Nigeria with camp activities, economy, and administrative portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
