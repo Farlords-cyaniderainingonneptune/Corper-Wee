@@ -27,6 +27,7 @@ import type {
   IdempotencyRecord,
   CampEvent,
   EventParticipant,
+  CampNotification,
 } from './types.js';
 
 class InMemoryRelationalDB {
@@ -50,7 +51,14 @@ class InMemoryRelationalDB {
   locations: Map<number, LocationZone> = new Map();
   events: Map<string, CampEvent> = new Map(); // eventId -> CampEvent
   eventParticipants: Map<string, EventParticipant[]> = new Map(); // eventId -> participants
+  friendships: Map<string, import('./types.js').Friendship> = new Map(); // friendshipId -> Friendship
+  userBlocks: import('./types.js').UserBlock[] = [];
+  userReports: import('./types.js').UserReport[] = [];
+  userPrivacy: Map<string, import('./types.js').UserPrivacySetting> = new Map(); // userId -> PrivacySetting
   gameSettings: Map<string, GameSettings> = new Map();
+  notifications: CampNotification[] = [];
+  dailyTaskCompletions: Map<string, import('./types.js').DailyTaskCompletion> = new Map();
+  dailyTaskAlertsSent: Set<string> = new Set();
 
   private isSeeded = false;
 
@@ -428,7 +436,7 @@ class InMemoryRelationalDB {
       this.eventParticipants.set(evt.id, []);
     });
 
-    // 8. Seed Settings
+    // 8. Seed Settings (Live Game Configuration)
     this.gameSettings.set('cp_to_naira_rate', {
       key: 'cp_to_naira_rate',
       value: { cp: 10, naira: 100.0 },
@@ -436,10 +444,53 @@ class InMemoryRelationalDB {
       updatedAt: now,
     });
 
+    this.gameSettings.set('parade_rewards', {
+      key: 'parade_rewards',
+      value: {
+        baseCpPerCommand: 15,
+        tier1AccuracyMin: 90,
+        tier1Multiplier: 1.5,
+        tier2AccuracyMin: 70,
+        tier2Multiplier: 1.2,
+        charismaGainThreshold: 85,
+      },
+      description: 'Parade mini-game CP reward rates and accuracy multipliers',
+      updatedAt: now,
+    });
+
+    this.gameSettings.set('canteen_rewards', {
+      key: 'canteen_rewards',
+      value: {
+        cpPerObstacle: 10,
+        puddlePenaltyCp: 5,
+        speedBonusCutoffSec: 60,
+        speedBonusMultiplier: 2,
+        minRewardCp: 10,
+        waterDrainAmount: 15,
+      },
+      description: 'Canteen Rush rewards, puddle penalty, and stamina/water drain',
+      updatedAt: now,
+    });
+
+    this.gameSettings.set('stealth_config', {
+      key: 'stealth_config',
+      value: {
+        cpPerSecondSurvived: 2,
+        maxSurvivalCp: 100,
+        caughtPenaltyCp: 15,
+      },
+      description: 'Soldier Evasion survival reward and capture penalty',
+      updatedAt: now,
+    });
+
     this.gameSettings.set('hydration_drain', {
       key: 'hydration_drain',
-      value: { idlePerMin: 2.0, runPerMin: 7.5 },
-      description: 'Water meter depletion speed',
+      value: {
+        idlePerSec: 0.08,
+        runPerSec: 0.25,
+        criticalThreshold: 25,
+      },
+      description: 'Water meter depletion speed per second and critical threshold',
       updatedAt: now,
     });
 
@@ -456,6 +507,26 @@ class InMemoryRelationalDB {
     });
 
     this.isSeeded = true;
+  }
+
+  public getUserByEmail(email: string): User | undefined {
+    const normalized = email.trim().toLowerCase();
+    for (const user of this.users.values()) {
+      if (user.email.toLowerCase() === normalized) {
+        return user;
+      }
+    }
+    return undefined;
+  }
+
+  public getUserByStateCode(stateCode: string): User | undefined {
+    const normalized = stateCode.trim().toUpperCase();
+    for (const user of this.users.values()) {
+      if (user.stateCode && user.stateCode.toUpperCase() === normalized) {
+        return user;
+      }
+    }
+    return undefined;
   }
 }
 

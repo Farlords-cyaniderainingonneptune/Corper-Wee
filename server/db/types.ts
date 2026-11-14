@@ -3,7 +3,7 @@
  */
 
 export type UserRole = 'PLAYER' | 'ADMIN' | 'SUPERADMIN';
-export type AccountStatus = 'ACTIVE' | 'SUSPENDED' | 'BANNED' | 'PENDING_REGISTRATION';
+export type AccountStatus = 'ACTIVE' | 'SUSPENDED' | 'BANNED' | 'PENDING_REGISTRATION' | 'DELETED';
 export type Gender = 'MALE' | 'FEMALE';
 export type TransactionType = 'EARN_ACTIVITY' | 'PENALTY_ACTIVITY' | 'CP_EXCHANGE' | 'MARKET_PURCHASE' | 'ADMIN_ADJUSTMENT';
 export type InteractionOutcome = 'GREAT_SUCCESS' | 'MILD_SUCCESS' | 'REJECTED' | 'COMEDIC_SLAP' | 'COMEDIC_PUNCH';
@@ -50,10 +50,15 @@ export interface User {
   role: UserRole;
   status: AccountStatus;
   isProtected: boolean; // Immutable superadmin protection
+  customPermissions?: Permission[]; // Optional Superadmin-assigned permission subset for ADMINs
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+  deletedAt?: string;
+  retentionUntil?: string;
 }
+
+export type InvitationStatus = 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
 
 export interface AdminInvitation {
   id: string;
@@ -61,10 +66,16 @@ export interface AdminInvitation {
   token: string;
   invitedByUserId: string;
   assignedRole: UserRole;
+  permissions: Permission[];
+  status: InvitationStatus;
   isConsumed: boolean;
   expiresAt: string;
   createdAt: string;
   consumedAt?: string;
+  consumedByUserId?: string;
+  revokedAt?: string;
+  revokedByUserId?: string;
+  revokeReason?: string;
 }
 
 export interface Platoon {
@@ -237,9 +248,80 @@ export interface AuditLog {
   createdAt: string;
 }
 
+export interface Friendship {
+  id: string;
+  userId: string;
+  friendUserId: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  relationshipScore: number; // 0 to 100
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserBlock {
+  id: string;
+  blockerUserId: string;
+  blockedUserId: string;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface UserReport {
+  id: string;
+  reporterUserId: string;
+  reportedUserId: string;
+  reason: string;
+  details?: string;
+  status: 'PENDING' | 'RESOLVED' | 'DISMISSED';
+  resolvedAt?: string;
+  resolvedByUserId?: string;
+  resolutionNote?: string;
+  createdAt: string;
+}
+
+export interface UserPrivacySetting {
+  userId: string;
+  allowInteractions: boolean;
+  allowFriendRequests: boolean;
+  showOnlineStatus: boolean;
+  updatedAt: string;
+}
+
 export interface GameSettings {
   key: string;
   value: any;
   description: string;
   updatedAt: string;
+}
+
+export type NotificationCategory =
+  | 'CAMP_JOIN'
+  | 'MEDAL_EARNED'
+  | 'ACTIVITY_RECORD'
+  | 'EVENT_UPDATE'
+  | 'SOCIAL_MILESTONE'
+  | 'DAILY_TASK_ALERT';
+
+export type DailyDutyType = 'MORNING_DRILL' | 'EVENING_PARADE';
+
+export interface DailyTaskCompletion {
+  id: string;
+  userId: string;
+  dateKey: string;
+  taskType: DailyDutyType;
+  rewardCp: number;
+  xpAwarded: number;
+  accuracy?: number;
+  completedAt: string;
+}
+
+export interface CampNotification {
+  id: string;
+  category: NotificationCategory;
+  actorUserId: string;
+  actorName: string;
+  actorStateCode?: string;
+  platoonNumber?: number;
+  message: string;
+  createdAt: string;
 }

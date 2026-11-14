@@ -9,6 +9,7 @@ import { config } from '../config/env.js';
 import type { User, UserRole } from '../db/types.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { signAccessToken, createRefreshToken, rotateRefreshToken, revokeRefreshToken } from '../middleware/auth.js';
+import { NotificationService } from './notificationService.js';
 
 export const STATE_CODE_REGEX = /^[A-Z]{2}\/\d{2}[A-C]\/\d{4}$/;
 
@@ -101,10 +102,193 @@ export class AuthService {
   }
 
   /**
+   * Demo Authentication Flow: Email + NYSC State Code
+   * Strictly enforces 1-to-1 uniqueness:
+   * - An email cannot be used with more than one state code.
+   * - A state code cannot be used with more than one email.
+   */
+  static async authenticateWithEmailAndStateCode(
+    rawEmail: string,
+    rawStateCode: string,
+    fullName?: string
+  ) {
+    if (!rawEmail || typeof rawEmail !== 'string') {
+      throw new AppError('Email address is required.', 400);
+    }
+    if (!rawStateCode || typeof rawStateCode !== 'string') {
+      throw new AppError('NYSC State Code is required.', 400);
+    }
+
+    const email = rawEmail.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      throw new AppError('Please provide a valid email address.', 400);
+    }
+
+    const stateCode = rawStateCode.trim().toUpperCase();
+    if (!STATE_CODE_REGEX.test(stateCode)) {
+      throw new AppError(
+        'Invalid NYSC State Code format. Expected format like OY/26C/5439 or LA/25A/1204',
+        422
+      );
+    }
+
+    const userByEmail = db.getUserByEmail(email);
+    const userByStateCode = db.getUserByStateCode(stateCode);
+
+    // Rule 1: Email must be unique to this state code
+    if (userByEmail && userByEmail.stateCode && userByEmail.stateCode.toUpperCase() !== stateCode) {
+      throw new AppError(
+        `Email "${email}" is already registered with State Code "${userByEmail.stateCode}". You cannot use an email with more than one state code.`,
+        409
+      );
+    }
+
+    // Rule 2: State Code must be unique to this email
+    if (userByStateCode && userByStateCode.email.toLowerCase() !== email) {
+      throw new AppError(
+        `State Code "${stateCode}" is already registered to a different email address (${userByStateCode.email}). A State Code cannot be registered to multiple emails.`,
+        409
+      );
+    }
+
+    const now = new Date().toISOString();
+    const isSuperadmin = email === config.superadmin.email.toLowerCase();
+
+    let user: User;
+    let isNewUser = false;
+
+    if (userByEmail && userByStateCode && userByEmail.id === userByStateCode.id) {
+      // Existing User Login
+      user = userByEmail;
+
+      if (user.status === 'SUSPENDED') {
+        throw new AppError('This corper account has been suspended by camp administration.', 403);
+      }
+      if (user.status === 'BANNED') {
+        throw new AppError('This account is permanently banned.', 403);
+      }
+      if (user.status === 'DELETED') {
+        throw new AppError('This account has been deleted under camp retention policies.', 403);
+      }
+
+      if (isSuperadmin) {
+        user.role = 'SUPERADMIN';
+        user.isProtected = true;
+      }
+
+      user.lastLoginAt = now;
+      user.updatedAt = now;
+      db.users.set(user.id, user);
+    } else if (userByEmail && !userByEmail.stateCode) {
+      // User created without state code previously
+      user = userByEmail;
+      user.stateCode = stateCode;
+      user.updatedAt = now;
+      db.users.set(user.id, user);
+
+      const assignedPlatoonId = ((db.users.size % 10) || 10);
+      this.initializePlayerDefaults(user.id, assignedPlatoonId, fullName);
+    } else if (!userByEmail && !userByStateCode) {
+      // New User Signup
+      isNewUser = true;
+      const role: UserRole = isSuperadmin ? 'SUPERADMIN' : 'PLAYER';
+      const displayName = fullName?.trim() || email.split('@')[0];
+
+      user = {
+        id: uuidv4(),
+        googleSub: `sub-${uuidv4()}`,
+        email,
+        displayName,
+        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(displayName)}`,
+        stateCode,
+        role,
+        status: 'ACTIVE',
+        isProtected: isSuperadmin,
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: now,
+      };
+
+      db.users.set(user.id, user);
+
+      const assignedPlatoonId = ((db.users.size % 10) || 10);
+      this.initializePlayerDefaults(user.id, assignedPlatoonId, displayName);
+
+      NotificationService.publish({
+        category: 'CAMP_JOIN',
+        actorUserId: user.id,
+        actorName: user.displayName,
+        actorStateCode: user.stateCode,
+        platoonNumber: assignedPlatoonId,
+        message: `${user.displayName} joined the camp (Platoon ${assignedPlatoonId})`,
+      });
+    } else {
+      throw new AppError('Credentials mismatch between Email and State Code.', 409);
+    }
+
+    const accessToken = signAccessToken(user);
+    const { rawToken: refreshToken } = createRefreshToken(user.id);
+
+    const character = db.playerCharacters.get(user.id);
+    const profile = db.playerProfiles.get(user.id);
+    const wallet = db.wallets.get(user.id);
+    const water = db.waterMeters.get(user.id);
+
+    const skinHexMap: Record<string, string> = {
+      '#b57850': 'LIGHT',
+      '#8D5524': 'WARM_BROWN',
+      '#824b2b': 'WARM_BROWN',
+      '#542d17': 'DEEP_BROWN',
+      '#30180a': 'DARK_EBONY',
+    };
+
+    return {
+      accessToken,
+      refreshToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        fullName: user.displayName,
+        role: user.role,
+        status: user.status,
+        accountStatus: user.status,
+        stateCode: user.stateCode,
+        platoonNumber: profile?.platoonId ?? 1,
+        isProtected: user.isProtected,
+      },
+      character: character ? {
+        gender: character.gender,
+        skinTone: skinHexMap[character.skinToneHex] || 'WARM_BROWN',
+        hairstyle: character.hairstyle,
+        hairColor: character.hairColorHex,
+        facialFeature: 'NONE',
+        uniformType: character.uniformType,
+        footwear: character.footwear,
+        accessories: character.accessory,
+      } : null,
+      wallet: wallet ? {
+        corperPoints: wallet.corperPoints,
+        virtualNaira: wallet.virtualNaira.toFixed(2),
+      } : { corperPoints: 100, virtualNaira: '1000.00' },
+      water: water ? {
+        waterLevel: water.currentLevel,
+        isDehydrated: water.currentLevel < 20,
+      } : { waterLevel: 100, isDehydrated: false },
+      requiresOnboarding: false,
+      isNewUser,
+    };
+  }
+
+  /**
    * Main Google Authentication Flow (Sign-in or Sign-up)
    */
-  static async handleGoogleAuth(idToken: string, fallbackEmail?: string, fallbackName?: string) {
-    const verifiedGoogleUser = this.verifyGoogleIdentity(idToken, fallbackEmail, fallbackName);
+  static async handleGoogleAuth(idToken?: string, fallbackEmail?: string, fallbackName?: string, stateCode?: string) {
+    if (fallbackEmail && stateCode) {
+      return this.authenticateWithEmailAndStateCode(fallbackEmail, stateCode, fallbackName);
+    }
+    const verifiedGoogleUser = this.verifyGoogleIdentity(idToken || '', fallbackEmail, fallbackName);
     const email = verifiedGoogleUser.email;
 
     // Check if user exists
@@ -154,6 +338,9 @@ export class AuthService {
       }
       if (user.status === 'BANNED') {
         throw new AppError('This account is permanently banned.', 403);
+      }
+      if (user.status === 'DELETED') {
+        throw new AppError('This account has been deleted under camp retention policies.', 403);
       }
 
       // If this is superadmin email, ensure role & protection are strictly locked
@@ -225,6 +412,15 @@ export class AuthService {
     // Balanced Platoon Assignment (1 - 10)
     const assignedPlatoonId = ((db.users.size % 10) || 10);
     this.initializePlayerDefaults(user.id, assignedPlatoonId, campNickname);
+
+    NotificationService.publish({
+      category: 'CAMP_JOIN',
+      actorUserId: user.id,
+      actorName: user.displayName,
+      actorStateCode: user.stateCode,
+      platoonNumber: assignedPlatoonId,
+      message: `${user.displayName} joined the camp (Platoon ${assignedPlatoonId})`,
+    });
 
     return {
       user: {

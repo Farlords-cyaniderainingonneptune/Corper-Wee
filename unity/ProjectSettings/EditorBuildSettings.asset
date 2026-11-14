@@ -1,0 +1,25 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/Authentication.unity
+    m_Guid: 00000000000000001000000000000001
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/CharacterCreation.unity
+    m_Guid: 00000000000000002000000000000002
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/CampEnvironment.unity
+    m_Guid: 00000000000000003000000000000003
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/ParadeGround.unity
+    m_Guid: 00000000000000004000000000000004
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/CanteenObstacle.unity
+    m_Guid: 00000000000000005000000000000005
+  - m_Enabled: 1
+    m_Path: Assets/Scenes/MamiMarket.unity
+    m_Guid: 00000000000000006000000000000006

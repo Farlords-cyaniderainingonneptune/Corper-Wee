@@ -5,6 +5,7 @@ import { randomUUID as uuidv4 } from 'crypto';
 import { db } from '../db/index.js';
 import type { CampEvent, EventParticipant, EventStatus } from '../db/types.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { NotificationService } from './notificationService.js';
 
 export class EventService {
   /**
@@ -93,6 +94,16 @@ export class EventService {
 
     participants.push(participant);
     db.eventParticipants.set(eventId, participants);
+
+    const user = db.users.get(userId);
+    NotificationService.publish({
+      category: 'EVENT_UPDATE',
+      actorUserId: userId,
+      actorName: user?.displayName || 'Corper',
+      actorStateCode: user?.stateCode,
+      platoonNumber: profile.platoonId,
+      message: `${user?.displayName || 'Corper'} signed up for ${event.title}`,
+    });
 
     return {
       message: `Successfully registered for '${event.title}'!`,
@@ -228,6 +239,15 @@ export class EventService {
       targetId: event.id,
       metadata: { title: event.title, location: locationName, startTime: event.startTime },
       createdAt: now,
+    });
+
+    const actor = db.users.get(actorUserId);
+    NotificationService.publish({
+      category: 'EVENT_UPDATE',
+      actorUserId,
+      actorName: actor?.displayName || 'Camp Command',
+      actorStateCode: actor?.stateCode,
+      message: `New camp event scheduled: ${event.title} at ${locationName}`,
     });
 
     return event;

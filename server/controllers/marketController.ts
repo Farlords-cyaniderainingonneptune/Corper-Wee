@@ -4,6 +4,18 @@
 import type { Response, NextFunction } from 'express';
 import { EconomyService } from '../services/economyService.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
+import { AppError } from '../middleware/errorHandler.js';
+
+function parsePositiveIntId(raw: string, label = 'identifier'): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new AppError(`Invalid numeric ${label}.`, 400);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new AppError(`Invalid numeric ${label}.`, 400);
+  }
+  return parsed;
+}
 
 export class MarketController {
   static getProducts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -79,6 +91,22 @@ export class MarketController {
   }
 
   // Admin Product Catalog Controls
+  static adminGetAllProducts(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const products = EconomyService.getAllMarketProductsForAdmin();
+      const rate = EconomyService.getConversionRate();
+      res.status(200).json({
+        status: 'success',
+        data: {
+          products,
+          conversionRate: rate,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static adminCreateProduct(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const actorUserId = req.user!.id;
@@ -119,7 +147,7 @@ export class MarketController {
   static adminUpdateProduct(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const actorUserId = req.user!.id;
-      const productId = parseInt(req.params.id, 10);
+      const productId = parsePositiveIntId(req.params.id, 'product identifier');
       const { name, description, priceNaira, stockQuantity, isActive, waterRefillValue } = req.body;
 
       const product = EconomyService.updateProduct(actorUserId, productId, {

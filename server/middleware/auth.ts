@@ -1,11 +1,12 @@
 /**
- * Corper Wee: Authentication, Token Management & Authorization Middleware
- * Supports Access Tokens (15m), Refresh Tokens with Family Rotation & Reuse Detection,
- * Account Status Validation, and Granular Permission Enforcement.
+ * Corper Wee: Authentication, HMAC-SHA256 Token Signing & Authorization Middleware
+ * Supports Access Tokens (15m, HMAC-SHA256 verified), Refresh Tokens with Family Rotation & Reuse Detection,
+ * Account Status Validation (ACTIVE only), and Granular Permission Enforcement.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { db } from '../db/index.js';
+import { config } from '../config/env.js';
 import type { User, UserRole, Permission, RefreshToken } from '../db/types.js';
 import { AuthorizationService } from '../services/authorizationService.js';
 import { AppError } from './errorHandler.js';
@@ -27,18 +28,25 @@ function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
 
+function computeTokenSignature(payloadB64: string): string {
+  return createHmac('sha256', config.jwtSecret).update(payloadB64).digest('base64url');
+}
+
 /**
- * Sign an Access Token
+ * Sign an Access Token with HMAC-SHA256 integrity protection
  */
 export function signAccessToken(user: User): string {
   const payload = {
     userId: user.id,
     role: user.role,
     type: 'ACCESS',
+    jti: randomUUID(),
     issuedAt: Date.now(),
     expiresAt: Date.now() + ACCESS_TOKEN_TTL_MS,
   };
-  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signatureB64 = computeTokenSignature(payloadB64);
+  return `${payloadB64}.${signatureB64}`;
 }
 
 /**
@@ -76,7 +84,7 @@ export function rotateRefreshToken(rawToken: string): { accessToken: string; new
   }
 
   // REUSE DETECTION: If this refresh token was already revoked / replaced,
-  // it indicates potential token theft! Invalidate all tokens in the entire family.
+  // invalidate all tokens in the entire rotation family.
   if (existing.isRevoked) {
     for (const [hash, token] of db.refreshTokens.entries()) {
       if (token.familyId === existing.familyId) {
@@ -96,7 +104,7 @@ export function rotateRefreshToken(rawToken: string): { accessToken: string; new
 
   const user = db.users.get(existing.userId);
   if (!user || user.status !== 'ACTIVE') {
-    throw new AppError('User account not found or is currently not active.', 401);
+    throw new AppError('User account not found or is currently not active.', 403);
   }
 
   // Issue new pair & invalidate old token
@@ -130,11 +138,27 @@ export function revokeRefreshToken(rawToken: string): boolean {
 }
 
 /**
- * Parse & verify an Access Token
+ * Parse & cryptographically verify an Access Token
  */
 export function parseAccessToken(token: string): { userId: string; role: UserRole } | null {
   try {
-    const raw = Buffer.from(token, 'base64url').toString('utf8');
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) {
+      return null;
+    }
+
+    const [payloadB64, providedSig] = parts;
+    if (!payloadB64 || !providedSig) return null;
+
+    const expectedSig = computeTokenSignature(payloadB64);
+    const providedBuf = Buffer.from(providedSig, 'utf8');
+    const expectedBuf = Buffer.from(expectedSig, 'utf8');
+    if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
+      return null;
+    }
+
+    const raw = Buffer.from(payloadB64, 'base64url').toString('utf8');
     const parsed = JSON.parse(raw);
     if (!parsed.userId || !parsed.expiresAt || parsed.expiresAt < Date.now() || parsed.type !== 'ACCESS') {
       return null;
@@ -165,13 +189,17 @@ export function authenticate(req: AuthenticatedRequest, res: Response, next: Nex
     return next(new AppError('User account not found.', 401));
   }
 
-  // Account status verification
+  // Account status verification (always authoritative from DB, preventing suspension/deletion bypass)
   if (user.status === 'SUSPENDED') {
     return next(new AppError('This corper account has been suspended by camp administration.', 403));
   }
 
   if (user.status === 'BANNED') {
     return next(new AppError('This account is permanently banned.', 403));
+  }
+
+  if (user.status === 'DELETED') {
+    return next(new AppError('This account has been deleted under camp retention policies.', 403));
   }
 
   req.user = user;
@@ -210,7 +238,7 @@ export function requirePermission(permission: Permission) {
       return next(new AppError('Authentication required.', 401));
     }
 
-    if (!AuthorizationService.hasPermission(req.user.role, permission)) {
+    if (!AuthorizationService.hasPermissionForUser(req.user, permission)) {
       return next(
         new AppError(
           `Access forbidden: lacking required permission '${permission}'.`,

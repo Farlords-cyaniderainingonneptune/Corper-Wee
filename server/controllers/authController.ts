@@ -3,16 +3,54 @@
  */
 import type { Response, NextFunction } from 'express';
 import { AuthService } from '../services/authService.js';
+import { AdminService } from '../services/adminService.js';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 
 export class AuthController {
-  static async googleAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  static async loginOrSignup(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
-      const { idToken, email, displayName } = req.body;
-      const result = await AuthService.handleGoogleAuth(idToken, email, displayName);
+      const { email, stateCode, fullName, displayName } = req.body;
+      const result = await AuthService.authenticateWithEmailAndStateCode(
+        email,
+        stateCode,
+        fullName || displayName
+      );
       res.status(200).json({
         status: 'success',
-        message: result.isNewUser ? 'Google identity verified. Please register NYSC State Code.' : 'Login successful.',
+        message: result.isNewUser ? 'Corper registered and platoon assigned!' : 'Welcome back, Corper!',
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async acceptInvitation(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { token, email, stateCode, fullName } = req.body;
+      const result = await AdminService.acceptAdminInvitation(token, email, stateCode, fullName);
+      res.status(200).json({
+        status: 'success',
+        message: 'Administrator invitation accepted successfully.',
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async googleAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    try {
+      const { idToken, email, displayName, stateCode, fullName } = req.body;
+      let result;
+      if (email && stateCode) {
+        result = await AuthService.authenticateWithEmailAndStateCode(email, stateCode, fullName || displayName);
+      } else {
+        result = await AuthService.handleGoogleAuth(idToken, email, displayName || fullName, stateCode);
+      }
+      res.status(200).json({
+        status: 'success',
+        message: result.isNewUser ? 'Registration successful.' : 'Login successful.',
         data: result,
       });
     } catch (error) {

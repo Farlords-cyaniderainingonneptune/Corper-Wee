@@ -112,6 +112,43 @@ export async function runBackendVerification() {
     assert(reuseCaught, 'Refresh token reuse detection caught replay attack and invalidated family');
 
     // ------------------------------------------------------------------------
+    // SECTION 2B: EMAIL & STATE CODE 1-TO-1 UNIQUENESS (Demo Stage Requirement)
+    // ------------------------------------------------------------------------
+    const demoEmail = `demo_${Date.now()}@gmail.com`;
+    const demoStateCode = 'KD/26B/7821';
+    const demoAuth = await AuthService.authenticateWithEmailAndStateCode(demoEmail, demoStateCode, 'Danladi Umar');
+    assert(demoAuth.user.email === demoEmail, 'Demo user registered with email');
+    assert(demoAuth.user.stateCode === demoStateCode, 'Demo user registered with state code');
+    assert(demoAuth.isNewUser === true, 'Flagged as new user');
+
+    // Test: Cannot use an email with more than one state code
+    let caughtEmailReuse = false;
+    try {
+      await AuthService.authenticateWithEmailAndStateCode(demoEmail, 'LA/26A/9999');
+    } catch (e: any) {
+      caughtEmailReuse = e.statusCode === 409;
+    }
+    assert(caughtEmailReuse, 'Cannot register an email with more than one state code (409 Conflict)');
+
+    // Test: Cannot use a state code with more than one email
+    let caughtStateCodeReuse = false;
+    try {
+      await AuthService.authenticateWithEmailAndStateCode('different_corper@gmail.com', demoStateCode);
+    } catch (e: any) {
+      caughtStateCodeReuse = e.statusCode === 409;
+    }
+    assert(caughtStateCodeReuse, 'Cannot register a state code with more than one email (409 Conflict)');
+
+    // Test: Matching email + state code logs in cleanly
+    const demoLogin = await AuthService.authenticateWithEmailAndStateCode(demoEmail, demoStateCode);
+    assert(demoLogin.isNewUser === false, 'Existing user logged in cleanly without duplication');
+    assert(demoLogin.user.id === demoAuth.user.id, 'User IDs match on repeat login');
+
+    // Test: Superadmin seed credentials work
+    const saLogin = await AuthService.authenticateWithEmailAndStateCode('farlodunolusege@gmail.com', 'OY/26C/5439');
+    assert(saLogin.user.role === 'SUPERADMIN', 'Superadmin logs in with credentials successfully');
+
+    // ------------------------------------------------------------------------
     // SECTION 3: CHARACTER & PLATOON MANAGEMENT (Prompt 7)
     // ------------------------------------------------------------------------
     const char = db.playerCharacters.get(newAuth.user.id);
@@ -341,7 +378,69 @@ export async function runBackendVerification() {
     }
     assert(joinCancelledRejected, 'Joining a cancelled event is rejected with 400');
 
-    console.log('[TEST] All Prompts 6, 7, 8, 9, 10 tests passed! Total verifications:', results.length);
+    // ------------------------------------------------------------------------
+    // SECTION 7: ADMIN PORTAL & USER MANAGEMENT WITH RETENTION (Prompts 20 & 21)
+    // ------------------------------------------------------------------------
+    // A. Detailed User Profile, Stats, Balances & Ledgers
+    const detail = AdminService.getPlayerDetails(newAuth.user.id);
+    assert(detail.user.id === newAuth.user.id, 'AdminService.getPlayerDetails returns user identity');
+    assert(detail.wallet.corperPoints >= 0, 'AdminService.getPlayerDetails returns wallet balances');
+    assert(detail.pointTransactions.length >= 2, 'AdminService.getPlayerDetails returns point ledger');
+    assert(detail.walletTransactions.length >= 2, 'AdminService.getPlayerDetails returns wallet ledger');
+
+    // B. Suspend & Reactivate with Audit Trail
+    const suspendRes = AdminService.setPlayerStatus(seededSuperadmin.id, demoAuth.user.id, 'SUSPENDED', 'Camp curfew violation');
+    assert(suspendRes.status === 'SUSPENDED', 'Admin suspended target corper account');
+
+    let suspendedLoginBlocked = false;
+    try {
+      await AuthService.authenticateWithEmailAndStateCode(demoEmail, demoStateCode);
+    } catch (e: any) {
+      suspendedLoginBlocked = e.statusCode === 403;
+    }
+    assert(suspendedLoginBlocked, 'Suspended account login rejected with 403');
+
+    const reactivateRes = AdminService.setPlayerStatus(seededSuperadmin.id, demoAuth.user.id, 'ACTIVE', 'Curfew appeal approved');
+    assert(reactivateRes.status === 'ACTIVE', 'Admin reactivated target corper account');
+
+    // C. Protected Superadmin Cannot Be Deleted
+    let superadminDeleteBlocked = false;
+    try {
+      AdminService.deletePlayerWithRetention(seededSuperadmin.id, seededSuperadmin.id, 'Attempt illegal delete');
+    } catch (e: any) {
+      superadminDeleteBlocked = e.statusCode === 403;
+    }
+    assert(superadminDeleteBlocked, 'Protected Superadmin account cannot be deleted (403 Forbidden)');
+
+    // D. Retention-Policy Deletion Anonymizes PII & Preserves Ledgers/Audits
+    const txCountBeforeDelete = EconomyService.getTransactionHistory(demoAuth.user.id).pointTransactions.length;
+    const delRes = AdminService.deletePlayerWithRetention(seededSuperadmin.id, demoAuth.user.id, 'Graduated and requested removal');
+    assert(delRes.status === 'DELETED', 'Account marked DELETED under 90-day retention policy');
+    assert(delRes.anonymizedEmail.endsWith('@anonymized.local'), 'Deleted user email anonymized');
+    assert(db.users.get(demoAuth.user.id)?.stateCode === undefined, 'Deleted user state code cleared');
+    assert(
+      EconomyService.getTransactionHistory(demoAuth.user.id).pointTransactions.length === txCountBeforeDelete,
+      'Immutable financial ledger preserved after retention deletion'
+    );
+
+    // E. Activity Monitoring, Staff Directory, Invitation Validation & Market Admin Catalog
+    const monitoring = AdminService.getActivityMonitoring();
+    assert(typeof monitoring.summary.totalSessions === 'number', 'Activity monitoring summary returns session metrics');
+
+    const staffData = AdminService.listStaffAndInvitations();
+    assert(staffData.staff.some((s) => s.role === 'SUPERADMIN'), 'Staff directory includes Superadmin');
+
+    const invite = AdminService.createAdminInvitation(seededSuperadmin.id, 'officer_test@nysc.gov.ng', 'ADMIN');
+    assert(invite.token.startsWith('invite_'), 'Superadmin issued single-use admin invitation token');
+
+    EconomyService.updateProduct(seededSuperadmin.id, newProduct.id, { isActive: false });
+    const allAdminProducts = EconomyService.getAllMarketProductsForAdmin();
+    assert(allAdminProducts.some((p) => p.id === newProduct.id && !p.isActive), 'Admin market catalog includes inactive products');
+
+    const hasDeleteAudit = db.auditLogs.some((l) => l.action === 'PLAYER_DELETED_RETENTION' && l.targetId === demoAuth.user.id);
+    assert(hasDeleteAudit, 'Retention deletion logged to immutable audit trail');
+
+    console.log('[TEST] All Prompts 6-10 & 20-21 tests passed! Total verifications:', results.length);
     return {
       success: results.every((r) => r.passed),
       results,

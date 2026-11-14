@@ -248,6 +248,14 @@ export class EconomyService {
   }
 
   /**
+   * Admin: Get all Mami Market products including inactive ones
+   */
+  static getAllMarketProductsForAdmin() {
+    return Array.from(db.products.values())
+      .sort((a, b) => a.categoryId - b.categoryId || a.id - b.id);
+  }
+
+  /**
    * Purchase an item at Mami Market (with Idempotency)
    */
   static purchaseProduct(userId: string, productId: number, quantity = 1, idempotencyKey?: string) {
